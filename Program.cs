@@ -1,12 +1,13 @@
-﻿using System;
-using System.Data.SqlClient;
+using System;
 using System.IO;
 using System.Threading.Tasks;
 using MySql.Data.MySqlClient;
+using PdfSharpCore.Drawing;
+using PdfSharpCore.Pdf;
 
 class Program
 {
-    private const string ConnectionString ="Server=localhost;Database=reservaciones;Uid=root;Pwd=;"; // Reemplaza con tu cadena de conexión a la base de datos
+    private const string ConnectionString = "Server=localhost;Database=reservaciones;Uid=root;Pwd=;"; // Ajusta según tu configuración
 
     static async Task Main(string[] args)
     {
@@ -56,59 +57,51 @@ class Program
 
         try
         {
-            // Consultar disponibilidad de asientos en la base de datos
             int asientosDisponibles = await ConsultarDisponibilidadAsientos(eventoId);
 
             if (asientosDisponibles >= asientos)
             {
-                // Realizar reservación
-                using (SqlConnection connection = new SqlConnection(ConnectionString))
+                using (MySqlConnection connection = new MySqlConnection(ConnectionString))
                 {
                     await connection.OpenAsync();
 
-                    // Insertar reservación en la tabla reservaciones
                     string insertReservacionQuery = @"INSERT INTO reservaciones (EventoId, Cliente, AsientosReservados, FechaReserva) 
-                                                     VALUES (@EventoId, @Cliente, @AsientosReservados, @FechaReserva);
-                                                     SELECT SCOPE_IDENTITY();"; // Obtener el ID de la nueva reservación
+                                                      VALUES (@EventoId, @Cliente, @AsientosReservados, @FechaReserva);";
 
                     DateTime fechaReserva = DateTime.Now;
 
-                    using (SqlCommand command = new SqlCommand(insertReservacionQuery, connection))
+                    using (MySqlCommand command = new MySqlCommand(insertReservacionQuery, connection))
                     {
                         command.Parameters.AddWithValue("@EventoId", eventoId);
                         command.Parameters.AddWithValue("@Cliente", cliente);
                         command.Parameters.AddWithValue("@AsientosReservados", asientos);
                         command.Parameters.AddWithValue("@FechaReserva", fechaReserva);
 
-                        // Ejecutar el comando y obtener el ID de la nueva reservación
-                        int nuevaReservacionId = Convert.ToInt32(await command.ExecuteScalarAsync());
+                        await command.ExecuteNonQueryAsync();
 
                         Console.WriteLine($"\nReservación completada para el cliente '{cliente}'. Asientos reservados: {asientos}");
+                    }
 
-                        // Actualizar la tabla eventos: restar los asientos reservados de AsientosDisponibles
-                        string updateEventosQuery = @"UPDATE eventos SET AsientosDisponibles = AsientosDisponibles - @AsientosReservados
-                                                     WHERE Id = @EventoId;";
+                    string updateEventosQuery = @"UPDATE eventos SET AsientosDisponibles = AsientosDisponibles - @AsientosReservados
+                                                  WHERE Id = @EventoId;";
 
-                        using (SqlCommand updateCommand = new SqlCommand(updateEventosQuery, connection))
-                        {
-                            updateCommand.Parameters.AddWithValue("@AsientosReservados", asientos);
-                            updateCommand.Parameters.AddWithValue("@EventoId", eventoId);
+                    using (MySqlCommand updateCommand = new MySqlCommand(updateEventosQuery, connection))
+                    {
+                        updateCommand.Parameters.AddWithValue("@AsientosReservados", asientos);
+                        updateCommand.Parameters.AddWithValue("@EventoId", eventoId);
 
-                            int rowsAffected = await updateCommand.ExecuteNonQueryAsync();
-
-                            Console.WriteLine($"Asientos disponibles actualizados en la base de datos. Asientos restantes: {asientosDisponibles - asientos}");
-                        }
-
-                        // Generar y guardar el PDF localmente
-                        string pdfPath = $"Boleto_Reservacion_{nuevaReservacionId}.pdf";
-                        GenerarPDF(cliente, eventoId, asientos, fechaReserva, pdfPath);
-                        Console.WriteLine($"Boleto generado y guardado localmente en: {pdfPath}");
+                        await updateCommand.ExecuteNonQueryAsync();
+                        Console.WriteLine("Disponibilidad de asientos actualizada.");
                     }
                 }
+
+                // Generar PDF
+                string filePath = GenerarBoletoPDF(cliente, eventoId, asientos);
+                Console.WriteLine($"\nBoleto generado: {filePath}");
             }
             else
             {
-                Console.WriteLine($"Lo sentimos, no hay suficientes asientos disponibles. Asientos disponibles: {asientosDisponibles}");
+                Console.WriteLine($"No hay suficientes asientos disponibles. Asientos restantes: {asientosDisponibles}");
             }
         }
         catch (Exception ex)
@@ -117,26 +110,19 @@ class Program
         }
     }
 
-    private static void GenerarPDF(string cliente, int eventoId, int asientos, DateTime fechaReserva, string filePath)
-    {
-        // Aquí deberías implementar la lógica para generar el PDF con la información de la reservación
-        // En este ejemplo, simplemente se guarda un archivo vacío como simulación
-        File.WriteAllText(filePath, $"Reservación para cliente: {cliente}, Evento ID: {eventoId}, Asientos: {asientos}, Fecha de reserva: {fechaReserva}");
-    }
-
     private static void VerReservaciones()
     {
         try
         {
-            using (SqlConnection connection = new SqlConnection(ConnectionString))
+            using (MySqlConnection connection = new MySqlConnection(ConnectionString))
             {
                 connection.Open();
 
                 string query = @"SELECT Id, EventoId, Cliente, AsientosReservados, FechaReserva FROM reservaciones;";
 
-                using (SqlCommand command = new SqlCommand(query, connection))
+                using (MySqlCommand command = new MySqlCommand(query, connection))
                 {
-                    using (SqlDataReader reader = command.ExecuteReader())
+                    using (MySqlDataReader reader = command.ExecuteReader())
                     {
                         Console.WriteLine("\nListado de reservaciones:");
                         while (reader.Read())
@@ -147,7 +133,7 @@ class Program
                             int asientosReservados = reader.GetInt32(3);
                             DateTime fechaReserva = reader.GetDateTime(4);
 
-                            Console.WriteLine($"ID: {id}, Evento ID: {eventoId}, Cliente: {cliente}, Asientos: {asientosReservados}, Fecha de reserva: {fechaReserva}");
+                            Console.WriteLine($"ID: {id}, Evento ID: {eventoId}, Cliente: {cliente}, Asientos: {asientosReservados}, Fecha: {fechaReserva}");
                         }
                     }
                 }
@@ -167,39 +153,68 @@ class Program
         try
         {
             int asientosDisponibles = await ConsultarDisponibilidadAsientos(eventoId);
-
-            Console.WriteLine($"Asientos disponibles para el evento ID {eventoId}: {asientosDisponibles}");
+            Console.WriteLine($"Asientos disponibles: {asientosDisponibles}");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error al consultar la disponibilidad de asientos: {ex.Message}");
+            Console.WriteLine($"Error al consultar la disponibilidad: {ex.Message}");
         }
     }
 
     private static async Task<int> ConsultarDisponibilidadAsientos(int eventoId)
     {
-        // Consultar la tabla eventos para obtener AsientosDisponibles
-        using (SqlConnection connection = new SqlConnection(ConnectionString))
+        using (MySqlConnection connection = new MySqlConnection(ConnectionString))
         {
             await connection.OpenAsync();
 
             string query = "SELECT AsientosDisponibles FROM eventos WHERE Id = @EventoId;";
 
-            using (SqlCommand command = new SqlCommand(query, connection))
+            using (MySqlCommand command = new MySqlCommand(query, connection))
             {
                 command.Parameters.AddWithValue("@EventoId", eventoId);
 
                 object result = await command.ExecuteScalarAsync();
 
-                if (result != null && result != DBNull.Value)
+                if (result != null)
                 {
-                    return (int)result;
+                    return Convert.ToInt32(result);
                 }
                 else
                 {
-                    throw new Exception($"No se encontró el evento con ID {eventoId}.");
+                    throw new Exception("Evento no encontrado.");
                 }
             }
         }
     }
-}		
+
+private static string GenerarBoletoPDF(string cliente, int eventoId, int asientos)
+{
+    string fileName = $"Boleto_{cliente}_{eventoId}.pdf";
+    string filePath = Path.Combine(Environment.CurrentDirectory, fileName);
+
+    using (PdfDocument pdf = new PdfDocument())
+    {
+        pdf.Info.Title = "Boleto de Reservación";
+
+        PdfPage page = pdf.AddPage();
+        XGraphics gfx = XGraphics.FromPdfPage(page);
+        XFont font = new XFont("Arial", 12, XFontStyle.Regular);
+
+        // Alineación del título en el centro superior de la página (XStringFormats.TopCenter)
+        gfx.DrawString("Boleto de Reservación", font, XBrushes.Black, 
+                       new XRect(0, 0, page.Width, 30), XStringFormats.TopCenter);
+
+        // Usar una alineación segura sin BaseLine
+        gfx.DrawString($"Cliente: {cliente}", font, XBrushes.Black, new XRect(20, 50, page.Width - 40, 20), XStringFormats.TopLeft);
+        gfx.DrawString($"Evento ID: {eventoId}", font, XBrushes.Black, new XRect(20, 70, page.Width - 40, 20), XStringFormats.TopLeft);
+        gfx.DrawString($"Asientos reservados: {asientos}", font, XBrushes.Black, new XRect(20, 90, page.Width - 40, 20), XStringFormats.TopLeft);
+        gfx.DrawString($"Fecha: {DateTime.Now}", font, XBrushes.Black, new XRect(20, 110, page.Width - 40, 20), XStringFormats.TopLeft);
+
+        pdf.Save(filePath);
+    }
+
+    return filePath;
+}
+
+}
+		
